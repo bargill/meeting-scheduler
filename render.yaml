@@ -1,0 +1,14 @@
+# Render.com deployment configuration
+# Deploy this as a Web Service on https://render.com
+services:
+  - type: web
+    name: meeting-scheduler
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /opt/render/project/src/scheduler.db

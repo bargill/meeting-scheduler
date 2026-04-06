@@ -1,0 +1,14 @@
+{
+    "scheduler_url": "https://YOUR-APP-NAME.onrender.com",
+    "organizer_name": "Nir",
+    "organizer_email": "bargill@gmail.com",
+    "default_duration_minutes": 60,
+    "default_timezone": "Asia/Jerusalem",
+    "reminder_after_hours": 48,
+    "zoom": {
+        "account_id": "",
+        "client_id": "",
+        "client_secret": ""
+    },
+    "active_meetings": []
+}

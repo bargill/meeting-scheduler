@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thanks! - {{ meeting.title }}</title>
+    <style>
+        :root {
+            --green: #10B981;
+            --green-light: #D1FAE5;
+            --gray-50: #F9FAFB;
+            --gray-500: #6B7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 3rem 2rem;
+            max-width: 480px;
+            text-align: center;
+        }
+        .checkmark {
+            width: 64px;
+            height: 64px;
+            background: var(--green-light);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+            font-size: 2rem;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        p { color: var(--gray-700); margin-bottom: 0.5rem; }
+        .sub { color: var(--gray-500); font-size: 0.9rem; margin-top: 1rem; }
+        a { color: var(--green); text-decoration: none; font-weight: 500; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="checkmark">&#10003;</div>
+        <h1>Thanks, {{ participant.name }}!</h1>
+        <p>Your availability for <strong>{{ meeting.title }}</strong> has been recorded.</p>
+        <p class="sub">
+            {{ meeting.organizer_name }} will confirm the final time once everyone has responded.
+            <br><br>
+            Changed your mind? <a href="/vote/{{ meeting.id }}?token={{ participant.token }}">Update your choices</a>
+        </p>
+    </div>
+</body>
+</html>

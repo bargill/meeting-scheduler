@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ meeting.title }} - Voting Closed</title>
+    <style>
+        :root {
+            --primary: #4F46E5;
+            --primary-light: #EEF2FF;
+            --gray-50: #F9FAFB;
+            --gray-500: #6B7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 3rem 2rem;
+            max-width: 480px;
+            text-align: center;
+        }
+        .icon {
+            width: 64px;
+            height: 64px;
+            background: var(--primary-light);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+            font-size: 2rem;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        p { color: var(--gray-700); }
+        .sub { color: var(--gray-500); font-size: 0.9rem; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">&#128197;</div>
+        <h1>{{ meeting.title }}</h1>
+        <p>Voting for this meeting has been closed.</p>
+        {% if meeting.finalized_slot %}
+        <p class="sub">The meeting has been scheduled. Check your calendar for details.</p>
+        {% else %}
+        <p class="sub">The organizer will notify everyone once a time is confirmed.</p>
+        {% endif %}
+    </div>
+</body>
+</html>
