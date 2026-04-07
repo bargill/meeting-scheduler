@@ -3,20 +3,37 @@ Meeting Scheduler - Voting Web App
 A Flask application that serves voting pages for meeting scheduling.
 Participants receive a unique link, pick their available time slots, and
 votes are collected for the organizer to finalize.
+
+Supports PostgreSQL (production) and SQLite (local development).
+Set DATABASE_URL env var for PostgreSQL, otherwise falls back to SQLite.
 """
 
 import os
 import uuid
-import sqlite3
 from datetime import datetime, timezone
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from flask import Flask, request, jsonify, render_template, g, abort
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
 
-DATABASE = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "scheduler.db"))
+DATABASE_URL = os.environ.get("DATABASE_URL")
+SQLITE_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "scheduler.db"))
+
+# Detect which database backend to use
+USE_POSTGRES = DATABASE_URL is not None
+
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+    # Render uses postgres:// but psycopg2 needs postgresql://
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+else:
+    import sqlite3
+
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -24,11 +41,46 @@ DATABASE = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DATABASE)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
-        g.db.execute("PRAGMA foreign_keys=ON")
+        if USE_POSTGRES:
+            g.db = psycopg2.connect(DATABASE_URL)
+            g.db.autocommit = False
+        else:
+            g.db = sqlite3.connect(SQLITE_PATH)
+            g.db.row_factory = sqlite3.Row
+            g.db.execute("PRAGMA journal_mode=WAL")
+            g.db.execute("PRAGMA foreign_keys=ON")
     return g.db
+
+
+def db_execute(query, params=None):
+    """Execute a query, handling parameter style differences between SQLite (?) and Postgres (%s)."""
+    db = get_db()
+    if USE_POSTGRES:
+        # Convert ? placeholders to %s for psycopg2
+        query = query.replace("?", "%s")
+        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    else:
+        cur = db.cursor()
+    cur.execute(query, params or ())
+    return cur
+
+
+def db_fetchone(query, params=None):
+    cur = db_execute(query, params)
+    row = cur.fetchone()
+    cur.close()
+    return row
+
+
+def db_fetchall(query, params=None):
+    cur = db_execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+
+def db_commit():
+    get_db().commit()
 
 
 @app.teardown_appcontext
@@ -38,13 +90,11 @@ def close_db(exception):
         db.close()
 
 
-def init_db():
-    db = sqlite3.connect(DATABASE)
-    db.executescript(SCHEMA)
-    db.close()
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
 
-
-SCHEMA = """
+SCHEMA_POSTGRES = """
 CREATE TABLE IF NOT EXISTS meetings (
     id              TEXT PRIMARY KEY,
     title           TEXT NOT NULL,
@@ -85,31 +135,49 @@ CREATE TABLE IF NOT EXISTS votes (
 );
 """
 
+SCHEMA_SQLITE = SCHEMA_POSTGRES  # Same schema works for both
+
+
+def init_db():
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        # Execute each statement separately for PostgreSQL
+        for statement in SCHEMA_POSTGRES.split(";"):
+            statement = statement.strip()
+            if statement:
+                cur.execute(statement)
+        conn.commit()
+        cur.close()
+        conn.close()
+    else:
+        import sqlite3 as sq
+        db = sq.connect(SQLITE_PATH)
+        db.executescript(SCHEMA_SQLITE)
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Helper to convert row to dict (works for both backends)
+# ---------------------------------------------------------------------------
+
+def row_to_dict(row):
+    """Convert a database row to a dictionary."""
+    if row is None:
+        return None
+    if USE_POSTGRES:
+        return dict(row)  # RealDictCursor already returns dict-like
+    else:
+        return dict(row)  # sqlite3.Row supports dict()
+
+
 # ---------------------------------------------------------------------------
 # API Routes
 # ---------------------------------------------------------------------------
 
 @app.route("/api/meetings", methods=["POST"])
 def create_meeting():
-    """Create a new meeting with time slots and participants.
-
-    Expected JSON body:
-    {
-        "title": "Weekly sync",
-        "organizer_name": "Nir",
-        "organizer_email": "bargill@gmail.com",
-        "duration_minutes": 60,
-        "description": "Optional description",
-        "timeslots": [
-            {"start": "2026-04-10T09:00:00+03:00", "end": "2026-04-10T10:00:00+03:00"},
-            ...
-        ],
-        "participants": [
-            {"name": "Alice", "email": "alice@example.com"},
-            ...
-        ]
-    }
-    """
+    """Create a new meeting with time slots and participants."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body required"}), 400
@@ -122,9 +190,7 @@ def create_meeting():
     now = datetime.now(timezone.utc).isoformat()
     meeting_id = str(uuid.uuid4())
 
-    db = get_db()
-
-    db.execute(
+    db_execute(
         """INSERT INTO meetings (id, title, organizer_name, organizer_email,
            duration_minutes, description, status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, 'voting', ?, ?)""",
@@ -132,11 +198,9 @@ def create_meeting():
          data["duration_minutes"], data.get("description", ""), now, now),
     )
 
-    timeslot_ids = []
     for slot in data["timeslots"]:
         ts_id = str(uuid.uuid4())
-        timeslot_ids.append(ts_id)
-        db.execute(
+        db_execute(
             "INSERT INTO timeslots (id, meeting_id, start_time, end_time) VALUES (?, ?, ?, ?)",
             (ts_id, meeting_id, slot["start"], slot["end"]),
         )
@@ -145,7 +209,7 @@ def create_meeting():
     for p in data["participants"]:
         p_id = str(uuid.uuid4())
         token = str(uuid.uuid4())
-        db.execute(
+        db_execute(
             "INSERT INTO participants (id, meeting_id, name, email, token) VALUES (?, ?, ?, ?, ?)",
             (p_id, meeting_id, p["name"], p["email"], token),
         )
@@ -156,7 +220,7 @@ def create_meeting():
             "vote_url": f"/vote/{meeting_id}?token={token}",
         })
 
-    db.commit()
+    db_commit()
 
     return jsonify({
         "meeting_id": meeting_id,
@@ -168,27 +232,29 @@ def create_meeting():
 @app.route("/api/meetings/<meeting_id>", methods=["GET"])
 def get_meeting(meeting_id):
     """Get full meeting details including vote tallies."""
-    db = get_db()
-    meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
     if not meeting:
         return jsonify({"error": "Meeting not found"}), 404
 
-    timeslots = db.execute(
-        "SELECT * FROM timeslots WHERE meeting_id = ? ORDER BY start_time", (meeting_id,)
-    ).fetchall()
+    meeting = row_to_dict(meeting)
 
-    participants = db.execute(
+    timeslots = db_fetchall(
+        "SELECT * FROM timeslots WHERE meeting_id = ? ORDER BY start_time", (meeting_id,)
+    )
+
+    participants = db_fetchall(
         "SELECT * FROM participants WHERE meeting_id = ?", (meeting_id,)
-    ).fetchall()
+    )
 
     # Build vote tally
     tally = {}
     for ts in timeslots:
-        votes = db.execute(
+        ts = row_to_dict(ts)
+        votes = db_fetchall(
             "SELECT v.available, p.name FROM votes v JOIN participants p ON v.participant_id = p.id WHERE v.timeslot_id = ?",
             (ts["id"],),
-        ).fetchall()
-        available_names = [v["name"] for v in votes if v["available"]]
+        )
+        available_names = [row_to_dict(v)["name"] for v in votes if row_to_dict(v)["available"]]
         tally[ts["id"]] = {
             "start": ts["start_time"],
             "end": ts["end_time"],
@@ -198,11 +264,11 @@ def get_meeting(meeting_id):
         }
 
     return jsonify({
-        "meeting": dict(meeting),
+        "meeting": meeting,
         "timeslots": tally,
         "participants": [
-            {"name": p["name"], "email": p["email"], "has_voted": bool(p["has_voted"]),
-             "token": p["token"]}
+            {"name": row_to_dict(p)["name"], "email": row_to_dict(p)["email"],
+             "has_voted": bool(row_to_dict(p)["has_voted"]), "token": row_to_dict(p)["token"]}
             for p in participants
         ],
     })
@@ -211,15 +277,17 @@ def get_meeting(meeting_id):
 @app.route("/api/meetings/<meeting_id>/status", methods=["GET"])
 def meeting_status(meeting_id):
     """Quick status check: who has voted, who hasn't."""
-    db = get_db()
-    meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
     if not meeting:
         return jsonify({"error": "Meeting not found"}), 404
 
-    participants = db.execute(
+    meeting = row_to_dict(meeting)
+
+    participants = db_fetchall(
         "SELECT name, email, has_voted, reminded_at, token FROM participants WHERE meeting_id = ?",
         (meeting_id,),
-    ).fetchall()
+    )
+    participants = [row_to_dict(p) for p in participants]
 
     voted = [p for p in participants if p["has_voted"]]
     pending = [p for p in participants if not p["has_voted"]]
@@ -243,39 +311,41 @@ def meeting_status(meeting_id):
 @app.route("/api/meetings/<meeting_id>/best-slots", methods=["GET"])
 def best_slots(meeting_id):
     """Return time slots ranked by number of available participants."""
-    db = get_db()
-    meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
     if not meeting:
         return jsonify({"error": "Meeting not found"}), 404
 
-    timeslots = db.execute(
+    timeslots = db_fetchall(
         "SELECT * FROM timeslots WHERE meeting_id = ? ORDER BY start_time", (meeting_id,)
-    ).fetchall()
+    )
 
-    total_participants = db.execute(
+    total_participants = db_fetchone(
         "SELECT COUNT(*) as cnt FROM participants WHERE meeting_id = ?", (meeting_id,)
-    ).fetchone()["cnt"]
+    )
+    total_count = row_to_dict(total_participants)["cnt"]
 
     results = []
     for ts in timeslots:
-        available_count = db.execute(
+        ts = row_to_dict(ts)
+        available_count_row = db_fetchone(
             "SELECT COUNT(*) as cnt FROM votes WHERE timeslot_id = ? AND available = 1",
             (ts["id"],),
-        ).fetchone()["cnt"]
+        )
+        available_count = row_to_dict(available_count_row)["cnt"]
         available_names = [
-            r["name"] for r in db.execute(
+            row_to_dict(r)["name"] for r in db_fetchall(
                 "SELECT p.name FROM votes v JOIN participants p ON v.participant_id = p.id "
                 "WHERE v.timeslot_id = ? AND v.available = 1", (ts["id"],)
-            ).fetchall()
+            )
         ]
         results.append({
             "timeslot_id": ts["id"],
             "start": ts["start_time"],
             "end": ts["end_time"],
             "available_count": available_count,
-            "total_participants": total_participants,
+            "total_participants": total_count,
             "available_names": available_names,
-            "everyone_available": available_count == total_participants,
+            "everyone_available": available_count == total_count,
         })
 
     results.sort(key=lambda x: x["available_count"], reverse=True)
@@ -286,17 +356,16 @@ def best_slots(meeting_id):
 def finalize_meeting(meeting_id):
     """Mark a meeting as finalized with the chosen slot and optional zoom link."""
     data = request.get_json() or {}
-    db = get_db()
-    meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
     if not meeting:
         return jsonify({"error": "Meeting not found"}), 404
 
     now = datetime.now(timezone.utc).isoformat()
-    db.execute(
+    db_execute(
         "UPDATE meetings SET status = 'finalized', finalized_slot = ?, zoom_link = ?, updated_at = ? WHERE id = ?",
         (data.get("finalized_slot"), data.get("zoom_link"), now, meeting_id),
     )
-    db.commit()
+    db_commit()
     return jsonify({"status": "finalized", "meeting_id": meeting_id})
 
 
@@ -306,13 +375,12 @@ def mark_reminded(meeting_id):
     data = request.get_json() or {}
     emails = data.get("emails", [])
     now = datetime.now(timezone.utc).isoformat()
-    db = get_db()
     for email in emails:
-        db.execute(
+        db_execute(
             "UPDATE participants SET reminded_at = ? WHERE meeting_id = ? AND email = ?",
             (now, meeting_id, email),
         )
-    db.commit()
+    db_commit()
     return jsonify({"reminded": emails})
 
 
@@ -327,34 +395,36 @@ def vote_page(meeting_id):
     if not token:
         abort(400, "Missing token parameter")
 
-    db = get_db()
-    meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
     if not meeting:
         abort(404, "Meeting not found")
+    meeting = row_to_dict(meeting)
 
     if meeting["status"] != "voting":
         return render_template("vote_closed.html", meeting=meeting)
 
-    participant = db.execute(
+    participant = db_fetchone(
         "SELECT * FROM participants WHERE meeting_id = ? AND token = ?",
         (meeting_id, token),
-    ).fetchone()
+    )
     if not participant:
         abort(403, "Invalid voting link")
+    participant = row_to_dict(participant)
 
-    timeslots = db.execute(
+    timeslots = db_fetchall(
         "SELECT * FROM timeslots WHERE meeting_id = ? ORDER BY start_time",
         (meeting_id,),
-    ).fetchall()
+    )
+    timeslots = [row_to_dict(ts) for ts in timeslots]
 
     # Check for existing votes
     existing_votes = {}
     if participant["has_voted"]:
-        votes = db.execute(
+        votes = db_fetchall(
             "SELECT timeslot_id, available FROM votes WHERE participant_id = ?",
             (participant["id"],),
-        ).fetchall()
-        existing_votes = {v["timeslot_id"]: v["available"] for v in votes}
+        )
+        existing_votes = {row_to_dict(v)["timeslot_id"]: row_to_dict(v)["available"] for v in votes}
 
     return render_template(
         "vote.html",
@@ -372,39 +442,43 @@ def submit_vote(meeting_id):
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
-    db = get_db()
-    meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
-    if not meeting or meeting["status"] != "voting":
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
+    if not meeting:
+        return jsonify({"error": "Voting is closed"}), 400
+    meeting = row_to_dict(meeting)
+    if meeting["status"] != "voting":
         return jsonify({"error": "Voting is closed"}), 400
 
-    participant = db.execute(
+    participant = db_fetchone(
         "SELECT * FROM participants WHERE meeting_id = ? AND token = ?",
         (meeting_id, token),
-    ).fetchone()
+    )
     if not participant:
         return jsonify({"error": "Invalid token"}), 403
+    participant = row_to_dict(participant)
 
-    timeslots = db.execute(
+    timeslots = db_fetchall(
         "SELECT id FROM timeslots WHERE meeting_id = ?", (meeting_id,)
-    ).fetchall()
+    )
+    timeslots = [row_to_dict(ts) for ts in timeslots]
 
     # Delete any existing votes for re-submission
-    db.execute("DELETE FROM votes WHERE participant_id = ?", (participant["id"],))
+    db_execute("DELETE FROM votes WHERE participant_id = ?", (participant["id"],))
 
     # Insert new votes
     selected_ids = request.form.getlist("slots")
     for ts in timeslots:
         vote_id = str(uuid.uuid4())
         available = 1 if ts["id"] in selected_ids else 0
-        db.execute(
+        db_execute(
             "INSERT INTO votes (id, participant_id, timeslot_id, available) VALUES (?, ?, ?, ?)",
             (vote_id, participant["id"], ts["id"], available),
         )
 
-    db.execute(
+    db_execute(
         "UPDATE participants SET has_voted = 1 WHERE id = ?", (participant["id"],)
     )
-    db.commit()
+    db_commit()
 
     return render_template("vote_thanks.html", meeting=meeting, participant=participant)
 
@@ -415,7 +489,11 @@ def submit_vote(meeting_id):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "database": "postgresql" if USE_POSTGRES else "sqlite",
+    })
 
 
 # ---------------------------------------------------------------------------
