@@ -251,7 +251,7 @@
                         <div class="date-label" data-date="{{ slot_date }}">{{ slot_date }}</div>
                     {% endif %}
 
-                    <label class="slot {% if existing_votes.get(slot.id) %}selected{% endif %}"
+                    <div class="slot {% if existing_votes.get(slot.id) %}selected{% endif %}"
                            data-slot-id="{{ slot.id }}">
                         <input type="checkbox" name="slots" value="{{ slot.id }}"
                                {% if existing_votes.get(slot.id) %}checked{% endif %}>
@@ -259,7 +259,7 @@
                         <span class="time-text" data-start="{{ slot.start_time }}" data-end="{{ slot.end_time }}">
                             {{ slot.start_time[11:16] }} &ndash; {{ slot.end_time[11:16] }}
                         </span>
-                    </label>
+                    </div>
 
                     {% if loop.last %}</div>{% endif %}
                 {% endfor %}
