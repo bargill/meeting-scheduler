@@ -326,6 +326,58 @@ def meeting_status(meeting_id):
     })
 
 
+@app.route("/api/meetings/<meeting_id>/votes-grid", methods=["GET"])
+def votes_grid(meeting_id):
+    """Return a full participant × timeslot vote matrix for the dashboard grid view."""
+    meeting = db_fetchone("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
+    if not meeting:
+        return jsonify({"error": "Meeting not found"}), 404
+    meeting = row_to_dict(meeting)
+
+    timeslots = [row_to_dict(r) for r in db_fetchall(
+        "SELECT * FROM timeslots WHERE meeting_id = ? ORDER BY start_time", (meeting_id,)
+    )]
+    participants = [row_to_dict(r) for r in db_fetchall(
+        "SELECT * FROM participants WHERE meeting_id = ?", (meeting_id,)
+    )]
+
+    # Build lookup: (participant_id, timeslot_id) -> available (0/1)
+    all_votes = db_fetchall(
+        """SELECT v.participant_id, v.timeslot_id, v.available
+           FROM votes v
+           JOIN participants p ON v.participant_id = p.id
+           WHERE p.meeting_id = ?""",
+        (meeting_id,),
+    )
+    vote_map = {(row_to_dict(v)["participant_id"], row_to_dict(v)["timeslot_id"]): row_to_dict(v)["available"]
+                for v in all_votes}
+
+    grid_participants = []
+    for p in participants:
+        row = {"id": p["id"], "name": p["name"], "email": p["email"],
+               "has_voted": bool(p["has_voted"]), "votes": {}}
+        for ts in timeslots:
+            key = (p["id"], ts["id"])
+            if not p["has_voted"]:
+                row["votes"][ts["id"]] = "pending"
+            elif key in vote_map:
+                row["votes"][ts["id"]] = "yes" if vote_map[key] else "no"
+            else:
+                row["votes"][ts["id"]] = "no"
+        grid_participants.append(row)
+
+    return jsonify({
+        "meeting_id": meeting_id,
+        "title": meeting["title"],
+        "status": meeting["status"],
+        "finalized_slot": meeting.get("finalized_slot"),
+        "zoom_link": meeting.get("zoom_link"),
+        "timeslots": [{"id": ts["id"], "start": ts["start_time"], "end": ts["end_time"]}
+                      for ts in timeslots],
+        "participants": grid_participants,
+    })
+
+
 @app.route("/api/meetings/<meeting_id>/best-slots", methods=["GET"])
 def best_slots(meeting_id):
     """Return time slots ranked by number of available participants."""
@@ -385,6 +437,18 @@ def finalize_meeting(meeting_id):
     )
     db_commit()
     return jsonify({"status": "finalized", "meeting_id": meeting_id})
+
+
+@app.route("/api/meetings/<meeting_id>", methods=["DELETE"])
+def delete_meeting(meeting_id):
+    """Permanently delete a meeting and all its data."""
+    meeting = db_fetchone("SELECT id FROM meetings WHERE id = ?", (meeting_id,))
+    if not meeting:
+        return jsonify({"error": "Meeting not found"}), 404
+    # CASCADE in schema handles timeslots, participants, votes
+    db_execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
+    db_commit()
+    return jsonify({"deleted": meeting_id})
 
 
 @app.route("/api/meetings/<meeting_id>/remind", methods=["POST"])
