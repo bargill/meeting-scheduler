@@ -229,6 +229,19 @@ def create_meeting():
     }), 201
 
 
+@app.route("/api/meetings", methods=["GET"])
+def list_meetings():
+    """List all meetings (summary), optionally filtered by status."""
+    status_filter = request.args.get("status")  # e.g. ?status=voting
+    if status_filter:
+        rows = db_fetchall(
+            "SELECT * FROM meetings WHERE status = ? ORDER BY created_at DESC", (status_filter,)
+        )
+    else:
+        rows = db_fetchall("SELECT * FROM meetings ORDER BY created_at DESC")
+    return jsonify({"meetings": [row_to_dict(r) for r in rows]})
+
+
 @app.route("/api/meetings/<meeting_id>", methods=["GET"])
 def get_meeting(meeting_id):
     """Get full meeting details including vote tallies."""
@@ -296,6 +309,11 @@ def meeting_status(meeting_id):
         "meeting_id": meeting_id,
         "title": meeting["title"],
         "status": meeting["status"],
+        "duration_minutes": meeting["duration_minutes"],
+        "description": meeting.get("description", ""),
+        "created_at": meeting["created_at"],
+        "finalized_slot": meeting.get("finalized_slot"),
+        "zoom_link": meeting.get("zoom_link"),
         "total_participants": len(participants),
         "voted_count": len(voted),
         "voted": [{"name": p["name"], "email": p["email"]} for p in voted],
