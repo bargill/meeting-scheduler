@@ -19,6 +19,23 @@ from flask import Flask, request, jsonify, render_template, g, abort
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
 
+
+# ---------------------------------------------------------------------------
+# CORS — allow the local dashboard (and any origin) to call the API directly
+# ---------------------------------------------------------------------------
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"]  = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+@app.route("/health",                                    methods=["OPTIONS"])
+@app.route("/api/meetings",                              methods=["OPTIONS"])
+@app.route("/api/meetings/<path:rest>",                  methods=["OPTIONS"])
+def cors_preflight(**kwargs):
+    return "", 204
+
 DATABASE_URL = os.environ.get("DATABASE_URL")
 SQLITE_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "scheduler.db"))
 
